@@ -30,6 +30,7 @@ var EXAMPLE=[{name:'Statement of account',rows:[
   ['06-Oct-2026','ATM withdrawal, Clifton','ATM-5521',20000,'',352540],
   ['07-Oct-2026','Easypaisa top-up','EP-90311',5000,'',347540]]}];
 
+var APP_VERSION='1.3';
 var S={files:[],nextId:1,running:false,active:0,sheets:[],
   opts:{mode:'table',layout:'perPage',sens:'normal',nums:true,pageCol:false}};
 
