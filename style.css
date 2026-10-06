@@ -126,7 +126,7 @@ button, input, select { font: inherit; color: inherit; }
   font-size: 22px;
   letter-spacing: -0.03em;
 }
-.brand svg { flex: none; filter: drop-shadow(0 2px 8px var(--accent-glow)); }
+.brand .logo { flex: none; width: 40px; height: 40px; border-radius: 10px; object-fit: cover; box-shadow: 0 2px 10px var(--accent-glow); }
 
 .privacy {
   display: flex;
