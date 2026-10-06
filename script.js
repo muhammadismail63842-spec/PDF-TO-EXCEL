@@ -76,12 +76,12 @@ function toLines(items,sens){
     r.items.sort(function(a,b){return a.x-b.x;});
     var cells=[],cur=null;
     r.items.forEach(function(it){
-      if(!cur){cur={t:it.s,x0:it.x,x1:it.x+it.w,h:it.h};return;}
+      if(!cur){cur={t:it.s,x0:it.x,x1:it.x+it.w,h:it.h,parts:[it]};return;}
       var gap=it.x-cur.x1,thr=Math.max(it.h,cur.h)*factor;
-      if(gap>thr||gap<-Math.max(it.h,cur.h)*0.15){cur.t=cur.t.trim();cells.push(cur);cur={t:it.s,x0:it.x,x1:it.x+it.w,h:it.h};}
+      if(gap>thr||gap<-Math.max(it.h,cur.h)*0.15){cur.t=cur.t.trim();cells.push(cur);cur={t:it.s,x0:it.x,x1:it.x+it.w,h:it.h,parts:[it]};}
       else{
         var sp=(gap>Math.max(it.h,cur.h)*0.12&&!/\s$/.test(cur.t)&&!/^\s/.test(it.s))?' ':'';
-        cur.t+=sp+it.s;cur.x1=Math.max(cur.x1,it.x+it.w);
+        cur.t+=sp+it.s;cur.x1=Math.max(cur.x1,it.x+it.w);cur.parts.push(it);
       }
     });
     cur.t=cur.t.trim();cells.push(cur);
@@ -146,22 +146,55 @@ function detectCols(rowSets){
     var w=median(g.items.map(function(a){return a.c.x1-a.c.x0;}));
     cols.push({pos:pos,e:e,x0:e==='L'?pos:pos-w,x1:e==='L'?pos+w:pos,n:g.items.length});
   });
-  /* A header label that matches no column and sits over none gets a column of its own. */
+  /* Match each header label to a data column. Headers are often centred, so first try an exact edge
+     match, then the closest centre. A column takes one header. */
+  var hmap=new Map(),taken=new Set();
+  function assignBest(cands){
+    cands.sort(function(a,b){return a.d-b.d;});
+    cands.forEach(function(x){
+      if(hmap.has(x.h)||taken.has(x.k))return;
+      hmap.set(x.h,x.k);taken.add(x.k);
+    });
+  }
+  var cand=[];
+  headers.forEach(function(h){cols.forEach(function(k){
+    var d=Math.abs((k.e==='L'?h.x0:h.x1)-k.pos);
+    if(d<=TOL)cand.push({h:h,k:k,d:d});
+  });});
+  assignBest(cand);
+  cand=[];
+  headers.forEach(function(h){
+    if(hmap.has(h))return;
+    cols.forEach(function(k){
+      var d=Math.abs((h.x0+h.x1)/2-(k.x0+k.x1)/2);
+      var lim=Math.max(70,((h.x1-h.x0)+(k.x1-k.x0))/2+30);
+      if(d<=lim)cand.push({h:h,k:k,d:d});
+    });
+  });
+  assignBest(cand);
+  /* A header with no free column: join the column it sits over, or get a column of its own (e.g. an Image column). */
   var extra=[];
   headers.forEach(function(h){
-    var hit=cols.some(function(k){return Math.abs((k.e==='L'?h.x0:h.x1)-k.pos)<=TOL;});
-    if(hit)return;
-    var over=cols.concat(extra).some(function(k){return Math.min(h.x1,k.x1+2)-Math.max(h.x0,k.x0-2)>0;});
-    if(!over)extra.push({pos:h.x0,e:'L',x0:h.x0,x1:h.x1,n:0});
+    if(hmap.has(h))return;
+    var best=null,bd=Infinity;
+    cols.forEach(function(k){
+      if(Math.min(h.x1,k.x1+2)-Math.max(h.x0,k.x0-2)>0){
+        var d=Math.abs((h.x0+h.x1)/2-(k.x0+k.x1)/2);
+        if(d<bd){bd=d;best=k;}
+      }
+    });
+    if(!best){best={pos:h.x0,e:'L',x0:h.x0,x1:h.x1,n:0};extra.push(best);}
+    hmap.set(h,best);
   });
   cols=cols.concat(extra);
   if(!cols.length)cols=[{pos:0,e:'L',x0:-Infinity,x1:Infinity,n:0}];
   cols.sort(function(a,b){return (a.x0+a.x1)-(b.x0+b.x1);});
-  return {cols:cols,tol:TOL};
+  return {cols:cols,tol:TOL,hmap:hmap};
 }
 
 function colFor(c,model,isHeader){
   var cols=model.cols,tol=model.tol,best=-1,bd=Infinity,i,k;
+  if(isHeader&&model.hmap&&model.hmap.has(c)){var hi2=cols.indexOf(model.hmap.get(c));if(hi2>=0)return hi2;}
   for(i=0;i<cols.length;i++){
     k=cols[i];
     var d=Math.abs((k.e==='L'?c.x0:c.x1)-k.pos);
@@ -192,11 +225,41 @@ function colFor(c,model,isHeader){
   return best<0?0:best;
 }
 
+function joinParts(parts){
+  var t=parts[0].s,prev=parts[0];
+  for(var i=1;i<parts.length;i++){
+    var p=parts[i],gap=p.x-(prev.x+prev.w);
+    t+=((gap>Math.max(p.h,prev.h)*0.12&&!/\s$/.test(t)&&!/^\s/.test(p.s))?' ':'')+p.s;
+    prev=p;
+  }
+  return t.trim();
+}
+/* "Plastic 30" where 30 really is the quantity: its right edge sits on a numeric column, so move it there. */
+function splitTail(r,model){
+  var out=[];
+  r.forEach(function(c){
+    var parts=c.parts;
+    if(!parts||parts.length<2||isNumText(c.t)){out.push(c);return;}
+    var tails=[];
+    while(parts.length>1){
+      var last=parts[parts.length-1];
+      var ok=isNumText(last.s)&&model.cols.some(function(k){return k.e==='R'&&Math.abs((last.x+last.w)-k.pos)<=model.tol+1;});
+      if(!ok)break;
+      tails.unshift({t:last.s.trim(),x0:last.x,x1:last.x+last.w,h:last.h,parts:[last]});
+      parts=parts.slice(0,-1);
+    }
+    if(!tails.length){out.push(c);return;}
+    out.push({t:joinParts(parts),x0:c.x0,x1:parts[parts.length-1].x+parts[parts.length-1].w,h:c.h,parts:parts});
+    tails.forEach(function(t){out.push(t);});
+  });
+  return out;
+}
+
 function gridFrom(rows,model){
   var hi=pickHeader(rows);
   return rows.map(function(r,ri){
     var arr=new Array(model.cols.length).fill('');
-    r.forEach(function(c){
+    (ri===hi?r:splitTail(r,model)).forEach(function(c){
       var i=colFor(c,model,ri===hi);
       arr[i]=arr[i]?arr[i]+' '+c.t:c.t;
     });
