@@ -30,7 +30,7 @@ var EXAMPLE=[{name:'Statement of account',rows:[
   ['06-Oct-2026','ATM withdrawal, Clifton','ATM-5521',20000,'',352540],
   ['07-Oct-2026','Easypaisa top-up','EP-90311',5000,'',347540]]}];
 
-var APP_VERSION='1.3';
+var APP_VERSION='1.4';
 var S={files:[],nextId:1,running:false,active:0,sheets:[],
   opts:{mode:'table',layout:'perPage',sens:'normal',nums:true,pageCol:false}};
 
@@ -292,19 +292,17 @@ function buildSheets(){
     var perPage=f.pages.map(function(p){return {n:p.n,lines:toLines(p.items,o.sens)};});
     if(o.layout==='single'){
       var rows=[];
-      if(o.mode==='table'){
+      {
         var cols=detectCols(perPage.map(function(p){return p.lines;}));
         perPage.forEach(function(p){
           gridFrom(p.lines,cols).forEach(function(r){rows.push(o.pageCol?[p.n].concat(r):r);});
         });
-      }else{
-        perPage.forEach(function(p){p.lines.forEach(function(r){var a=r.map(function(c){return c.t;});rows.push(o.pageCol?[p.n].concat(a):a);});});
       }
       if(rows.length)out.push({name:uniqueName(base,used),rows:finish(rows)});
     }else{
       perPage.forEach(function(p){
         if(!p.lines.length)return;
-        var rows=o.mode==='table'?gridFrom(p.lines,detectCols([p.lines])):p.lines.map(function(r){return r.map(function(c){return c.t;});});
+        var rows=gridFrom(p.lines,detectCols([p.lines]));
         var nm=f.pages.length===1?base:base.slice(0,24)+' p'+p.n;
         out.push({name:uniqueName(nm,used),rows:finish(rows)});
       });
@@ -545,7 +543,7 @@ window.addEventListener('drop',function(e){e.preventDefault();});
 
 document.querySelectorAll('input[name="mode"]').forEach(function(r){r.addEventListener('change',function(){
   S.opts.mode=r.value;
-  $('#modeHint').textContent=r.value==='table'?'Aligns text into columns, like the table you see in the PDF.':'Puts each line of the PDF on its own row, with text pieces side by side.';
+  $('#modeHint').textContent=r.value==='table'?'Aligns text into columns, like the table you see in the PDF.':'Keeps every line of the PDF as its own row, with values lined up in the same columns.';
   S.active=0;refresh();});});
 document.querySelectorAll('input[name="layout"]').forEach(function(r){r.addEventListener('change',function(){S.opts.layout=r.value;S.active=0;refresh();});});
 $('#sens').addEventListener('change',function(e){S.opts.sens=e.target.value;refresh();});
