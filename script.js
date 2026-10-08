@@ -30,9 +30,9 @@ var EXAMPLE=[{name:'Statement of account',rows:[
   ['06-Oct-2026','ATM withdrawal, Clifton','ATM-5521',20000,'',352540],
   ['07-Oct-2026','Easypaisa top-up','EP-90311',5000,'',347540]]}];
 
-var APP_VERSION='1.5';
+var APP_VERSION='1.7';
 var S={files:[],nextId:1,running:false,active:0,sheets:[],
-  opts:{mode:'table',layout:'perPage',sens:'normal',nums:true,pageCol:false}};
+  opts:{mode:'table',layout:'perPage',sens:'normal',nums:true,pageCol:false,pics:false},busy:false};
 
 /* ---------- helpers ---------- */
 function fmtSize(b){return b<1024?b+' B':b<1048576?(b/1024).toFixed(0)+' KB':(b/1048576).toFixed(1)+' MB';}
@@ -86,7 +86,9 @@ function toLines(items,sens){
       }
     });
     cur.t=cur.t.trim();cells.push(cur);
-    return cells.filter(function(c){return c.t!=='';});
+    var kept=cells.filter(function(c){return c.t!=='';});
+    kept.y=r.y;kept.h=mh;
+    return kept;
   }).filter(function(r){return r.length>0;});
 }
 
@@ -291,20 +293,21 @@ function buildSheets(){
     var base=baseName(f.name);
     var perPage=f.pages.map(function(p){return {n:p.n,lines:toLines(p.items,o.sens)};});
     if(o.layout==='single'){
-      var rows=[];
+      var rows=[],srcs=[];
       {
         var cols=detectCols(perPage.map(function(p){return p.lines;}));
         perPage.forEach(function(p){
+          srcs.push({f:f,n:p.n,lines:p.lines,off:rows.length});
           gridFrom(p.lines,cols).forEach(function(r){rows.push(o.pageCol?[p.n].concat(r):r);});
         });
       }
-      if(rows.length)out.push({name:uniqueName(base,used),rows:finish(rows)});
+      if(rows.length)out.push({name:uniqueName(base,used),rows:finish(rows),srcs:srcs});
     }else{
       perPage.forEach(function(p){
         if(!p.lines.length)return;
         var rows=gridFrom(p.lines,detectCols([p.lines]));
         var nm=f.pages.length===1?base:base.slice(0,24)+' p'+p.n;
-        out.push({name:uniqueName(nm,used),rows:finish(rows)});
+        out.push({name:uniqueName(nm,used),rows:finish(rows),srcs:[{f:f,n:p.n,lines:p.lines,off:0}]});
       });
     }
   });
@@ -313,6 +316,94 @@ function buildSheets(){
 function finish(rows){
   var w=rows.map(function(r){return r.map(function(v){return typeof v==='string'?convVal(v):v;});});
   return trimEmptyCols(w);
+}
+
+/* ---------- pictures: pure helpers ---------- */
+/* Multiply two PDF matrices the way pdf.js does (b is applied first, then a). */
+function mulM(a,b){
+  return [a[0]*b[0]+a[2]*b[1],a[1]*b[0]+a[3]*b[1],a[0]*b[2]+a[2]*b[3],a[1]*b[2]+a[3]*b[3],
+          a[0]*b[4]+a[2]*b[5]+a[4],a[1]*b[4]+a[3]*b[5]+a[5]];
+}
+/* Walk a pdf.js operator list and return the transform matrix of every picture that is drawn. */
+function imageMatrices(fnArray,argsArray,OPS){
+  var ctm=[1,0,0,1,0,0],stack=[],out=[],imgOps={};
+  [OPS.paintImageXObject,OPS.paintInlineImageXObject,OPS.paintJpegXObject].forEach(function(k){if(k!=null)imgOps[k]=1;});
+  for(var i=0;i<fnArray.length;i++){
+    var fn=fnArray[i],a=argsArray[i];
+    if(fn===OPS.save)stack.push(ctm.slice());
+    else if(fn===OPS.restore){if(stack.length)ctm=stack.pop();}
+    else if(fn===OPS.transform){if(a&&a.length>=6)ctm=mulM(ctm,a);}
+    else if(fn===OPS.paintFormXObjectBegin){stack.push(ctm.slice());if(a&&a[0])ctm=mulM(ctm,a[0]);}
+    else if(fn===OPS.paintFormXObjectEnd){if(stack.length)ctm=stack.pop();}
+    else if(imgOps[fn])out.push(ctm.slice());
+  }
+  return out;
+}
+/* A picture is drawn into the unit square. Return its box on the page (user space) and on the canvas (pixels). */
+function boxFromCtm(m,toVp){
+  var uxs=[],uys=[],cxs=[],cys=[];
+  [[0,0],[1,0],[0,1],[1,1]].forEach(function(p){
+    var x=m[0]*p[0]+m[2]*p[1]+m[4],y=m[1]*p[0]+m[3]*p[1]+m[5];
+    var v=toVp(x,y);uxs.push(x);uys.push(y);cxs.push(v[0]);cys.push(v[1]);
+  });
+  var mn=function(a){return Math.min.apply(null,a);},mx=function(a){return Math.max.apply(null,a);};
+  return {ux:(mn(uxs)+mx(uxs))/2,uy:(mn(uys)+mx(uys))/2,uw:mx(uxs)-mn(uxs),uh:mx(uys)-mn(uys),
+          cx0:mn(cxs),cy0:mn(cys),cx1:mx(cxs),cy1:mx(cys)};
+}
+/* Drop specks, and pictures that cover the whole page (a scanned page, a background). */
+function keepBox(b,pageW,pageH){
+  if(b.uw<8||b.uh<8)return false;
+  if(b.uw*b.uh>=0.85*pageW*pageH)return false;
+  return true;
+}
+/* Give each picture to the text line it sits next to. One picture per line (the biggest). */
+function assignImages(lines,imgs){
+  var res={};
+  if(!lines.length||!imgs.length)return res;
+  var ys=lines.map(function(l){return (l.y||0)+(l.h||0)*0.3;});
+  var gaps=[];
+  for(var i=1;i<ys.length;i++)gaps.push(Math.abs(ys[i-1]-ys[i]));
+  var spacing=median(gaps);
+  imgs.forEach(function(img){
+    var best=-1,bd=Infinity;
+    ys.forEach(function(y,i){var d=Math.abs(y-img.uy);if(d<bd){bd=d;best=i;}});
+    var lim=Math.max(img.uh*0.6,spacing*0.75,6);
+    if(best<0||bd>lim)return;
+    var cur=res[best];
+    if(!cur||img.w*img.h>cur.w*cur.h)res[best]=img;
+  });
+  return res;
+}
+function findImageCol(rows){
+  for(var i=0;i<Math.min(6,rows.length);i++){
+    for(var c=0;c<rows[i].length;c++){
+      var v=rows[i][c];
+      if(typeof v==='string'&&/^(images?|photos?|pictures?|pics?|imgs?)$/i.test(v.trim()))return c;
+    }
+  }
+  return -1;
+}
+function looksHeader(r){
+  var t=r.filter(function(v){return v!==''&&v!=null;});
+  if(t.length<3)return false;
+  return t.filter(function(v){return typeof v==='string'&&!isNumText(v);}).length/t.length>=0.6;
+}
+/* Decide which picture goes in which cell of a sheet. Returns null if the sheet has no pictures. */
+function planPictures(sheet){
+  var items=[];
+  (sheet.srcs||[]).forEach(function(src){
+    var imgs=src.f.imgs&&src.f.imgs[src.n];
+    if(!imgs||!imgs.length)return;
+    var m=assignImages(src.lines,imgs);
+    Object.keys(m).forEach(function(k){items.push({row:src.off+(+k),img:m[k]});});
+  });
+  if(!items.length)return null;
+  var rows=sheet.rows,col=findImageCol(rows);
+  if(col<0){
+    rows=rows.map(function(r,i){return [i===0&&looksHeader(r)?'Image':''].concat(r);});
+    col=0;
+  }
+  return {rows:rows,col:col,items:items};
 }
 
 /* ---------- PDF reading ---------- */
@@ -426,7 +517,7 @@ function renderPreview(){
   var sh=sheets[S.active];
   var wrap=$('#gridwrap'),more=$('#more'),tabs=$('#tabs');
   wrap.textContent='';more.textContent='';tabs.textContent='';
-  $('#dlXlsx').disabled=!live;$('#dlCsv').disabled=!live;
+  $('#dlXlsx').disabled=!live||S.busy;$('#dlCsv').disabled=!live;
   var chip=$('#chip');
   chip.textContent=live?'Your data':(S.files.length?'Working':'Example');
   chip.className='chip'+(live?' live':'');
@@ -469,6 +560,127 @@ function renderPreview(){
   });
 }
 
+/* ---------- pictures: reading and writing ---------- */
+async function extractImages(f){
+  if(f.imgs)return f.imgs;
+  var buf=new Uint8Array(await f.file.arrayBuffer());
+  var pdf=await pdfjsLib.getDocument({data:buf,password:f.password||undefined}).promise;
+  var OPS=pdfjsLib.OPS,res={};
+  try{
+    for(var n=1;n<=pdf.numPages;n++){
+      var page=await pdf.getPage(n);
+      var ol=await page.getOperatorList();
+      var mats=imageMatrices(ol.fnArray,ol.argsArray,OPS);
+      if(mats.length){
+        var v1=page.getViewport({scale:1});
+        var sc=Math.min(2,3200/Math.max(v1.width,v1.height));
+        var vp=page.getViewport({scale:sc});
+        var cv=document.createElement('canvas');
+        cv.width=Math.max(1,Math.ceil(vp.width));cv.height=Math.max(1,Math.ceil(vp.height));
+        var ctx=cv.getContext('2d');
+        ctx.fillStyle='#ffffff';ctx.fillRect(0,0,cv.width,cv.height);
+        await page.render({canvasContext:ctx,viewport:vp}).promise;
+        var list=[],seen={};
+        mats.forEach(function(m){
+          var b=boxFromCtm(m,function(x,y){return vp.convertToViewportPoint(x,y);});
+          if(!keepBox(b,v1.width,v1.height))return;
+          var key=[b.cx0,b.cy0,b.cx1,b.cy1].map(Math.round).join(',');
+          if(seen[key])return;seen[key]=1;
+          var x0=Math.max(0,Math.floor(b.cx0)+1),y0=Math.max(0,Math.floor(b.cy0)+1);
+          var x1=Math.min(cv.width,Math.ceil(b.cx1)-1),y1=Math.min(cv.height,Math.ceil(b.cy1)-1);
+          var cw=x1-x0,ch=y1-y0;
+          if(cw<4||ch<4)return;
+          var c2=document.createElement('canvas');c2.width=cw;c2.height=ch;
+          c2.getContext('2d').drawImage(cv,x0,y0,cw,ch,0,0,cw,ch);
+          list.push({dataUrl:c2.toDataURL('image/jpeg',0.88),uy:b.uy,uh:b.uh,
+                     w:(b.cx1-b.cx0)/sc,h:(b.cy1-b.cy0)/sc});
+        });
+        if(list.length)res[n]=list;
+        cv.width=cv.height=1;
+      }
+      page.cleanup();
+    }
+  }finally{try{pdf.destroy();}catch(e){}}
+  f.imgs=res;
+  return res;
+}
+
+var EXCELJS_URLS=[
+  'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js',
+  'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js'];
+function loadScript(url){
+  return new Promise(function(ok,fail){
+    var s=document.createElement('script');
+    s.src=url;s.onload=ok;s.onerror=function(){s.remove();fail(new Error('load failed'));};
+    document.head.appendChild(s);
+  });
+}
+async function loadExcelJS(){
+  if(window.ExcelJS)return;
+  for(var i=0;i<EXCELJS_URLS.length&&!window.ExcelJS;i++){
+    try{await loadScript(EXCELJS_URLS[i]);}catch(e){}
+  }
+  if(!window.ExcelJS)throw new Error('picture engine could not load');
+}
+
+/* One pixel is 0.75 point. Excel column width is in characters, about 7 pixels each. */
+async function toXlsxPicBlob(plans){
+  await loadExcelJS();
+  var wb=new ExcelJS.Workbook();
+  S.sheets.forEach(function(s,si){
+    var plan=plans[si],rows=plan?plan.rows:s.rows;
+    var ws=wb.addWorksheet(s.name);
+    rows.forEach(function(r){ws.addRow(r.map(function(v){return v===''?null:v;}));});
+    var n=rows.reduce(function(m,r){return Math.max(m,r.length);},0);
+    for(var c=0;c<n;c++){
+      var mx=8;
+      rows.forEach(function(r){var v=r[c];if(v!=null)mx=Math.max(mx,String(v).length+2);});
+      ws.getColumn(c+1).width=Math.min(mx,60);
+    }
+    if(!plan)return;
+    var rowPt={},colCh=0,fit=[];
+    plan.items.forEach(function(it){
+      var k=Math.min(1,400/it.img.h);
+      var wpt=it.img.w*k,hpt=it.img.h*k;
+      fit.push({row:it.row,img:it.img,wpx:wpt*96/72,hpx:hpt*96/72,hpt:hpt});
+      rowPt[it.row]=Math.max(rowPt[it.row]||0,hpt+8);
+      colCh=Math.max(colCh,(wpt*96/72+12)/7);
+    });
+    var col=ws.getColumn(plan.col+1);
+    col.width=Math.min(255,Math.max(col.width||8,colCh));
+    Object.keys(rowPt).forEach(function(r){
+      var row=ws.getRow(+r+1);
+      row.height=Math.min(409,rowPt[r]);
+      row.eachCell({includeEmpty:true},function(cell){cell.alignment={vertical:'middle'};});
+    });
+    fit.forEach(function(it){
+      var id=wb.addImage({base64:it.img.dataUrl,extension:'jpeg'});
+      ws.addImage(id,{tl:{col:plan.col+0.04,row:it.row+4/Math.max(rowPt[it.row],8)},
+        ext:{width:it.wpx,height:it.hpx},editAs:'oneCell'});
+    });
+  });
+  var out=await wb.xlsx.writeBuffer();
+  return new Blob([out],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+
+function setBusy(on,label){
+  S.busy=on;
+  $('#dlXlsx').disabled=on||!S.sheets.length;
+  $('#dlXlsxLabel').textContent=on?(label||'Working…'):'Download Excel (.xlsx)';
+}
+async function buildWithPictures(){
+  var files=S.files.filter(function(f){return f.status==='done';});
+  for(var i=0;i<files.length;i++){
+    setBusy(true,'Reading pictures '+(i+1)+' of '+files.length+'…');
+    await extractImages(files[i]);
+  }
+  var plans=S.sheets.map(planPictures);
+  if(!plans.some(Boolean))return null;
+  setBusy(true,'Building Excel…');
+  return await toXlsxPicBlob(plans);
+}
+
 /* ---------- downloads ---------- */
 var dlPromise=null;
 function getDownloads(){
@@ -480,10 +692,10 @@ function getDownloads(){
   }
   return dlPromise;
 }
-async function saveBlob(filename,blob){
+async function saveBlob(filename,blob,note){
   var dl=await getDownloads();
   if(dl){
-    try{await dl.save({filename:filename,data:blob});toast('Saved '+filename);return;}
+    try{await dl.save({filename:filename,data:blob});toast(note||('Saved '+filename));return;}
     catch(e){
       if(e&&e.code==='declined'){toast('Download cancelled.');return;}
       if(e&&e.code==='rate_limited'){toast('Please wait a moment and try again.');return;}
@@ -495,7 +707,7 @@ async function saveBlob(filename,blob){
     a.href=URL.createObjectURL(blob);a.download=filename;
     document.body.appendChild(a);a.click();a.remove();
     setTimeout(function(){URL.revokeObjectURL(a.href);},5000);
-    toast('Downloading '+filename);
+    toast(note||('Downloading '+filename));
   }catch(e){toast('Your browser blocked the download.');}
 }
 
@@ -517,12 +729,26 @@ function toXlsxBlob(){
   return new Blob([out],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
 }
 
-$('#dlXlsx').addEventListener('click',function(){
-  if(!S.sheets.length)return;
+$('#dlXlsx').addEventListener('click',async function(){
+  if(!S.sheets.length||S.busy)return;
   if(!window.XLSX){toast('The Excel engine could not load. Reload the page.');return;}
   var done=S.files.filter(function(f){return f.status==='done';});
   var name=(done.length===1?baseName(done[0].name):'converted-pdfs')+'.xlsx';
-  try{saveBlob(name,toXlsxBlob());}catch(e){toast('Could not build the Excel file.');}
+  var blob=null,note='';
+  if(S.opts.pics){
+    try{
+      blob=await buildWithPictures();
+      if(!blob)note='No pictures were found in this PDF, so the Excel file has none.';
+    }catch(e){
+      if(window.console)console.error(e);
+      note='Pictures could not be added, so the Excel file has none.';
+    }
+    setBusy(false);
+  }
+  if(!blob){
+    try{blob=toXlsxBlob();}catch(e){toast('Could not build the Excel file.');return;}
+  }
+  saveBlob(name,blob,note);
 });
 $('#dlCsv').addEventListener('click',function(){
   var s=S.sheets[S.active];if(!s)return;
@@ -549,6 +775,7 @@ document.querySelectorAll('input[name="layout"]').forEach(function(r){r.addEvent
 $('#sens').addEventListener('change',function(e){S.opts.sens=e.target.value;refresh();});
 $('#nums').addEventListener('change',function(e){S.opts.nums=e.target.checked;refresh();});
 $('#pageCol').addEventListener('change',function(e){S.opts.pageCol=e.target.checked;refresh();});
+$('#pics').addEventListener('change',function(e){S.opts.pics=e.target.checked;});
 
 render();
 getDownloads();
