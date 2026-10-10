@@ -1,5 +1,4 @@
 /* PDF to Excel: Slate and Emerald Glow theme */
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
   color-scheme: dark;
@@ -36,9 +35,9 @@
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
   --shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.5);
 
-  --f-display: 'Space Grotesk', system-ui, sans-serif;
-  --f-body: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --f-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --f-display: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --f-body: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --f-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   --radius: 14px;
   --radius-lg: 22px;
 }
@@ -370,7 +369,8 @@ table.xl {
 .xl thead th:first-child { left: 0; z-index: 3; }
 .xl tbody tr:hover td { background: var(--row-hover); color: var(--accent-hover); }
 .xl td.num { text-align: right; color: var(--num); font-weight: 500; }
-.xl tr.first td { font-weight: 600; }
+.xl tr.first td, .xl tr.hdr td { font-weight: 700; }
+.xl tr.hdr td { background: var(--head); }
 
 .empty { display: grid; place-items: center; padding: 60px 20px; text-align: center; color: var(--muted); min-height: 300px; }
 .empty strong { display: block; color: var(--ink); font-family: var(--f-display); font-size: 19px; margin-bottom: 4px; }
@@ -425,3 +425,28 @@ select:focus-visible, .pw input:focus-visible, .gridwrap:focus-visible, .check i
   * { transition: none !important; }
   .drop:hover, .drop.over, .btn:hover:not(:disabled) { transform: none; }
 }
+
+/* ---- v2: job progress, summary, details ---- */
+.job, .summary { border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 14px 16px; background: var(--bg); display: grid; gap: 10px; }
+.job[hidden], .summary[hidden] { display: none; }
+.job .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.job .txt { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.job .st { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.prog { height: 8px; border-radius: 4px; background: var(--line-strong); overflow: hidden; }
+.prog i { display: block; height: 100%; width: 0; background: var(--accent-gradient); transition: width 0.2s ease-out; }
+.btn.danger { border-color: var(--bad); color: var(--bad); background: transparent; }
+.btn.danger:hover { background: var(--bad-soft); }
+.summary { border-color: var(--accent); background: var(--accent-soft); }
+.summary h2 { margin: 0; font-size: 16px; color: var(--accent); }
+.summary dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin: 0; }
+.summary dt { font-size: 12px; color: var(--muted); }
+.summary dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
+.summary .hint:empty { display: none; }
+details.more-opts { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; }
+details.more-opts summary { cursor: pointer; font-weight: 600; }
+details.more-opts[open] summary { margin-bottom: 12px; }
+details.more-opts .check { margin-top: 12px; }
+fieldset:disabled { opacity: 0.6; }
+fieldset.opts { border: 0; padding: 0; margin: 0; min-width: 0; }
+
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
